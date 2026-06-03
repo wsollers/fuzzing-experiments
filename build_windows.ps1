@@ -216,7 +216,7 @@ if (-not (Test-Path (Join-Path $DoomSrc ".git"))) {
 Write-Step "Configuring with preset '$Preset'..."
 
 Push-Location $RepoRoot
-cmake --preset $Preset
+& cmake --preset "$Preset"
 if ($LASTEXITCODE -ne 0) { Write-Fail "CMake configure failed." }
 Pop-Location
 
@@ -225,7 +225,7 @@ Write-Ok "Configure complete -- build dir: $BuildDir"
 # --- Step 4: Build ------------------------------------------------------------
 Write-Step "Building..."
 
-cmake --build --preset $Preset
+& cmake --build --preset "$Preset"
 if ($LASTEXITCODE -ne 0) { Write-Fail "Build failed. Check output above." }
 
 Write-Ok "Build succeeded."
