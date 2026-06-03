@@ -1,0 +1,33 @@
+# .gitignore for fuzzing-experiments
+
+# Build outputs
+build/
+*.o
+*.a
+
+# Fuzzer corpus (can grow very large; commit seeds separately)
+corpus/
+
+# Generated reports (except placeholder)
+reports/*
+!reports/.gitkeep
+
+# Coverage data
+*.profraw
+*.profdata
+*.lcov
+
+# CodeQL database
+codeql_db/
+
+# Doom 3 BFG source (populated by clone_doom.sh, not committed)
+src/doom-3-bfg/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/
+.idea/
+*.swp

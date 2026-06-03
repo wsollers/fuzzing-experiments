@@ -1,0 +1,53 @@
+# GitHub Actions: CI workflow
+# Runs CodeQL, OpenGrep, and a short fuzzer smoke-test on every push.
+
+name: Fuzz CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      fuzz_timeout:
+        description: "Fuzzer timeout per harness (seconds)"
+        default: "30"
+        required: false
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone Doom 3 BFG
+        run: bash scripts/clone_doom.sh
+
+      - name: Build Docker image
+        run: docker build -t fuzzing-experiments .
+
+      - name: Run pipeline
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/reports:/reports" \
+            -v "${{ github.workspace }}/src:/workspace/src" \
+            -e FUZZ_TIMEOUT=${{ github.event.inputs.fuzz_timeout || '30' }} \
+            fuzzing-experiments
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-reports
+          path: reports/
+          retention-days: 30
+
+      - name: Print coverage summary
+        run: cat reports/coverage_report.md || echo "No coverage report generated"
+
+      - name: Print findings summary
+        run: cat reports/findings_report.md || echo "No findings report generated"
