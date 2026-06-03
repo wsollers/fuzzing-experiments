@@ -70,6 +70,16 @@ function Write-Ok   { param([string]$Msg) Write-Host "  OK  $Msg" -ForegroundCol
 function Write-Warn { param([string]$Msg) Write-Host "  !!  $Msg" -ForegroundColor Yellow }
 function Write-Fail { param([string]$Msg) Write-Host "FAIL  $Msg" -ForegroundColor Red; exit 1 }
 
+# Safe version of getting compiler version strings — never throws, never
+# passes output as positional arguments to another command.
+function Get-VersionString {
+    param([string]$Exe, [string]$Args = "--version")
+    try {
+        $raw = & $Exe $Args.Split(" ") 2>&1
+        return ($raw | Where-Object { $_ -match '\d+\.\d+' } | Select-Object -First 1) -as [string]
+    } catch { return "unknown" }
+}
+
 $RepoRoot   = $PSScriptRoot
 $ReportsDir = Join-Path $RepoRoot "reports"
 $SrcDir     = Join-Path $RepoRoot "src"
@@ -80,36 +90,34 @@ New-Item -ItemType Directory -Force $ReportsDir | Out-Null
 # ─── Step 0: Locate and initialise the VS build environment ───────────────────
 Write-Step "Locating Visual Studio build environment..."
 
-function Invoke-VsEnv {
+function Find-VcVarsAll {
     param([string]$Year)
 
     # Try vswhere first (most reliable, works for any edition)
-    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vswhere) {
-        $vsInstallPath = & $vswhere -latest -products * `
+        # First pass: match requested year
+        $installPaths = & $vswhere -products * `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath 2>$null |
-            Where-Object { $_ -like "*\$Year\*" -or $Year -eq "" } |
+            -property installationPath 2>$null
+
+        $match = $installPaths |
+            Where-Object { $_ -like "*\$Year\*" } |
             Select-Object -First 1
 
-        # If year filter found nothing, take whatever vswhere returns
-        if (-not $vsInstallPath) {
-            $vsInstallPath = & $vswhere -latest -products * `
-                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-                -property installationPath 2>$null |
-                Select-Object -First 1
+        # Second pass: take anything if year filter matched nothing
+        if (-not $match) {
+            $match = $installPaths | Select-Object -First 1
         }
 
-        if ($vsInstallPath) {
-            $vcvars = Join-Path $vsInstallPath "VC\Auxiliary\Build\vcvarsall.bat"
-            if (Test-Path $vcvars) {
-                return $vcvars
-            }
+        if ($match) {
+            $candidate = Join-Path $match "VC\Auxiliary\Build\vcvarsall.bat"
+            if (Test-Path $candidate) { return $candidate }
         }
     }
 
-    # Fallback: well-known paths ordered by preference
-    $candidates = @(
+    # Hard-coded fallback list, preferred year first
+    $all = @(
         "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
         "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat",
         "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat",
@@ -117,24 +125,16 @@ function Invoke-VsEnv {
         "C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvarsall.bat",
         "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat"
     )
-
-    # If a specific year was requested, sort matching ones first
-    if ($Year -ne "") {
-        $candidates = ($candidates | Where-Object { $_ -like "*\$Year\*" }) +
-                      ($candidates | Where-Object { $_ -notlike "*\$Year\*" })
-    }
-
-    foreach ($c in $candidates) {
-        if (Test-Path $c) { return $c }
-    }
-    return $null
+    $sorted = ($all | Where-Object { $_ -like "*\$Year\*" }) +
+              ($all | Where-Object { $_ -notlike "*\$Year\*" })
+    return $sorted | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 
-# Only initialise if cl/cmake are not already available (i.e. not in a Dev Prompt)
-$NeedsInit = -not (Get-Command cl -ErrorAction SilentlyContinue)
-
-if ($NeedsInit) {
-    $vcvars = Invoke-VsEnv -Year $VSYear
+# Skip init if already in a Developer Prompt (cl already in PATH)
+if (Get-Command cl -ErrorAction SilentlyContinue) {
+    Write-Ok "Build environment already active (cl found in PATH)."
+} else {
+    $vcvars = Find-VcVarsAll -Year $VSYear
     if (-not $vcvars) {
         Write-Fail "Could not find vcvarsall.bat. Install Visual Studio 2022 with the 'Desktop development with C++' workload."
     }
@@ -142,32 +142,34 @@ if ($NeedsInit) {
     Write-Ok "Found: $vcvars"
     Write-Ok "Initialising x64 build environment..."
 
-    # Source the bat file and import all env vars it sets into this PowerShell session
-    $envDump = cmd /c "`"$vcvars`" x64 > nul 2>&1 && set"
-    if (-not $envDump) {
-        Write-Fail "vcvarsall.bat failed to initialise. Check your VS installation."
+    # Run vcvarsall inside cmd and capture the resulting environment variables
+    $envLines = cmd /c "`"$vcvars`" x64 >nul 2>&1 && set"
+    if (-not $envLines) {
+        Write-Fail "vcvarsall.bat produced no output. Check your VS installation."
     }
 
-    $envDump | Where-Object { $_ -match '^[A-Za-z_][A-Za-z0-9_()]*=' } | ForEach-Object {
-        $name, $value = $_ -split '=', 2
-        [System.Environment]::SetEnvironmentVariable($name, $value, 'Process')
+    foreach ($line in $envLines) {
+        if ($line -match '^([A-Za-z_][A-Za-z0-9_(){}]*)=(.*)$') {
+            [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+        }
     }
-
-    Write-Ok "VS environment loaded."
-} else {
-    Write-Ok "Build environment already active (cl found in PATH)."
+    Write-Ok "VS environment loaded from $vcvars"
 }
 
-# Verify the essential tools are now available
+# Verify essential tools
 foreach ($tool in @("cl", "cmake", "ninja")) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-        Write-Fail "$tool not found after environment init. Ensure the 'C++ CMake tools for Windows' component is installed in VS."
+        Write-Fail "'$tool' not found. Ensure 'C++ CMake tools for Windows' is installed in VS Installer."
     }
 }
 
-Write-Ok "cl      : $(cmd /c 'cl 2>&1' | Select-String 'Version' | Select-Object -First 1)"
-Write-Ok "cmake   : $(cmake --version | Select-Object -First 1)"
-Write-Ok "ninja   : $(ninja --version)"
+# Print version info safely — capture output into a variable first
+$clVer     = Get-VersionString -Exe "cl" -Args ""
+$cmakeVer  = (cmake --version 2>&1 | Select-Object -First 1) -as [string]
+$ninjaVer  = (ninja --version  2>&1 | Select-Object -First 1) -as [string]
+Write-Ok "cl    : $clVer"
+Write-Ok "cmake : $cmakeVer"
+Write-Ok "ninja : $ninjaVer"
 
 # ─── Step 1: Detect toolchain and choose preset ───────────────────────────────
 Write-Step "Detecting toolchain..."
@@ -177,29 +179,36 @@ $HasCL      = [bool](Get-Command cl       -ErrorAction SilentlyContinue)
 
 if ($Preset -ne "") {
     Write-Ok "Using user-specified preset: $Preset"
+
 } elseif ($HasClangCL) {
-    $ClangVerLine = (clang-cl --version 2>&1 | Select-Object -First 1)
-    $ClangMajor   = if ($ClangVerLine -match '(\d+)\.') { [int]$Matches[1] } else { 0 }
-    Write-Ok "clang-cl found — $ClangVerLine"
+    # Capture clang-cl version safely into a variable
+    $clangVerRaw  = (clang-cl --version 2>&1) -as [string[]]
+    $clangVerLine = ($clangVerRaw | Select-Object -First 1) -as [string]
+    $clangMajor   = if ($clangVerLine -match '(\d+)\.') { [int]$Matches[1] } else { 0 }
+    Write-Ok "clang-cl $clangMajor found: $clangVerLine"
     $Preset = if ($SkipFuzz) { "windows-clang-debug" } else { "windows-clang-fuzz" }
+
 } elseif ($HasCL) {
-    $CLVerLine  = (cmd /c "cl 2>&1" | Select-String 'Version' | Select-Object -First 1)
-    $CLMajorVer = if ($CLVerLine -match 'Version (\d+)\.') { [int]$Matches[1] } else { 0 }
-    Write-Ok "MSVC cl found — $CLVerLine"
+    $clVerRaw  = (cl 2>&1) -as [string[]]
+    $clVerLine = ($clVerRaw | Where-Object { $_ -match 'Version' } | Select-Object -First 1) -as [string]
+    $clMajor   = if ($clVerLine -match 'Version (\d+)\.') { [int]$Matches[1] } else { 0 }
+    Write-Ok "MSVC cl $clMajor found: $clVerLine"
+
     if ($SkipFuzz) {
         $Preset = "windows-msvc-release"
-    } elseif ($CLMajorVer -ge 19) {
+    } elseif ($clMajor -ge 19) {
         $Preset = "windows-msvc-fuzz"
     } else {
-        Write-Warn "MSVC version too old for /fsanitize=fuzzer (need 19.29+). Using release preset."
+        Write-Warn "MSVC version may be too old for /fsanitize=fuzzer (need cl 19.29+). Falling back to release."
         $Preset   = "windows-msvc-release"
         $SkipFuzz = $true
     }
+
 } else {
-    Write-Fail "No supported C++ compiler found after environment init."
+    Write-Fail "No supported C++ compiler found."
 }
 
-Write-Ok "Selected preset : $Preset"
+Write-Ok "Selected preset: $Preset"
 $BuildDir = Join-Path $RepoRoot "build" $Preset
 
 # ─── Step 2: Clone Doom 3 BFG if needed ───────────────────────────────────────
@@ -236,14 +245,13 @@ if (-not $SkipCodeQL) {
     Write-Step "Running CodeQL..."
 
     if (-not (Get-Command codeql -ErrorAction SilentlyContinue)) {
-        Write-Warn "codeql not found in PATH."
-        Write-Warn "Download from: https://github.com/github/codeql-action/releases"
+        Write-Warn "codeql not found. Download from: https://github.com/github/codeql-action/releases"
         Write-Warn "Skipping CodeQL step."
     } else {
         $CodeQLDB = Join-Path $BuildDir "codeql_db"
         $SarifOut = Join-Path $ReportsDir "codeql_results.sarif"
 
-        codeql database create $CodeQLDB `
+        codeql database create "$CodeQLDB" `
             --language=cpp `
             --command="cmake --build --preset $Preset" `
             --overwrite `
@@ -253,7 +261,7 @@ if (-not $SkipCodeQL) {
             Write-Warn "CodeQL database creation failed."
         } else {
             codeql pack install "$RepoRoot\codeql"
-            codeql database analyze $CodeQLDB `
+            codeql database analyze "$CodeQLDB" `
                 "$RepoRoot\codeql\queries\buffer_access.ql" `
                 "$RepoRoot\codeql\queries\uninitialized_var.ql" `
                 "$RepoRoot\codeql\queries\integer_overflow.ql" `
