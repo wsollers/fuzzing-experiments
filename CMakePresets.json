@@ -32,7 +32,8 @@
       "cacheVariables": {
         "CMAKE_C_COMPILER":   "clang-cl",
         "CMAKE_CXX_COMPILER": "clang-cl",
-        "CMAKE_LINKER":       "lld-link"
+        "CMAKE_LINKER":       "lld-link",
+        "CMAKE_AR":           "llvm-lib"
       }
     },
     {

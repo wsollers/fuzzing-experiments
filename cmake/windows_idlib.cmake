@@ -29,6 +29,7 @@ function(apply_windows_idlib_flags target)
     # clang-cl or Clang targeting Windows
     target_compile_options(${target} PRIVATE
       -Wno-everything       # third-party code — silence all warnings
+      /EHsc                 # idLib uses C++ exceptions in Thread.cpp
     )
     target_compile_definitions(${target} PRIVATE
       _CRT_SECURE_NO_WARNINGS

@@ -319,11 +319,20 @@ if (-not $SkipFuzz) {
             Write-Ok "Running $FuzzerName for ${FuzzTimeout}s..."
             $env:LLVM_PROFILE_FILE = Join-Path $ReportsDir "${FuzzerName}.profraw"
 
-            & $FuzzerExe $CorpusDir `
-                "-max_total_time=$FuzzTimeout" `
-                "-artifact_prefix=$CrashDir\" `
-                "-print_final_stats=1" `
-                2>&1 | Tee-Object -FilePath $LogFile
+            $FuzzerCmd = @(
+                "`"$FuzzerExe`"",
+                "`"$CorpusDir`"",
+                "`"-max_total_time=$FuzzTimeout`"",
+                "`"-artifact_prefix=$CrashDir\`"",
+                "`"-print_final_stats=1`"",
+                "2>&1"
+            ) -join " "
+
+            cmd.exe /d /s /c $FuzzerCmd | Tee-Object -FilePath $LogFile
+
+            if ($LASTEXITCODE -ne 0) {
+                Write-Fail "$FuzzerName failed with exit code $LASTEXITCODE. Log: $LogFile"
+            }
 
             Write-Ok "$FuzzerName complete -- log: $LogFile"
         }

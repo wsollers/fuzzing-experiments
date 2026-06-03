@@ -12,6 +12,13 @@ option(ENABLE_UBSAN    "Enable UndefinedBehaviorSanitizer" OFF)
 option(ENABLE_MSAN     "Enable MemorySanitizer"            OFF)
 option(ENABLE_COVERAGE "Emit coverage instrumentation"     OFF)
 
+# clang-cl's LibFuzzer runtime for Windows is built against the static CRT.
+# Keep all fuzz-instrumented objects on the same runtime to avoid
+# /failifmismatch errors at link time.
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND ENABLE_FUZZING)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+endif()
+
 # ── Toolchain helpers ─────────────────────────────────────────────────────────
 include(cmake/sanitizers.cmake)
 include(cmake/clang_fuzzing.cmake)
@@ -74,6 +81,90 @@ if(EXISTS "${DOOM_SRC}/neo/idlib")
   endif()
 
   apply_sanitizer_flags(doom_idlib)
+
+  add_library(doom_savegame_file STATIC
+    "${DOOM_SRC}/neo/framework/Compressor.cpp"
+    "${DOOM_SRC}/neo/framework/File.cpp"
+    "${DOOM_SRC}/neo/framework/File_SaveGame.cpp"
+    "${DOOM_SRC}/neo/framework/Unzip.cpp"
+    "${DOOM_SRC}/neo/framework/zlib/adler32.c"
+    "${DOOM_SRC}/neo/framework/zlib/compress.c"
+    "${DOOM_SRC}/neo/framework/zlib/crc32.c"
+    "${DOOM_SRC}/neo/framework/zlib/deflate.c"
+    "${DOOM_SRC}/neo/framework/zlib/infback.c"
+    "${DOOM_SRC}/neo/framework/zlib/inffast.c"
+    "${DOOM_SRC}/neo/framework/zlib/inflate.c"
+    "${DOOM_SRC}/neo/framework/zlib/inftrees.c"
+    "${DOOM_SRC}/neo/framework/zlib/trees.c"
+    "${DOOM_SRC}/neo/framework/zlib/uncompr.c"
+    "${DOOM_SRC}/neo/framework/zlib/zutil.c"
+  )
+
+  target_include_directories(doom_savegame_file PUBLIC
+    "${DOOM_SRC}/neo"
+    "${DOOM_SRC}/neo/idlib"
+    "${DOOM_SRC}/neo/framework"
+  )
+
+  target_link_libraries(doom_savegame_file PUBLIC doom_idlib)
+
+  if(WIN32)
+    apply_windows_idlib_flags(doom_savegame_file)
+    target_compile_definitions(doom_savegame_file PUBLIC
+      _HAS_AUTO_PTR_ETC=1
+    )
+  else()
+    target_compile_definitions(doom_savegame_file PUBLIC
+      __linux__
+      ID_PC_LINUX
+      ID_PC
+    )
+    target_compile_options(doom_savegame_file PRIVATE
+      -Wno-unused-variable
+      -Wno-unused-function
+      -Wno-deprecated-declarations
+      -Wno-format
+      -Wno-ignored-attributes
+    )
+  endif()
+
+  apply_sanitizer_flags(doom_savegame_file)
+
+  add_library(doom_savegame_restore STATIC
+    "fuzz/doom_savegame_restore_minimal.cpp"
+  )
+
+  target_include_directories(doom_savegame_restore PUBLIC
+    "${DOOM_SRC}/neo"
+    "${DOOM_SRC}/neo/idlib"
+    "${DOOM_SRC}/neo/framework"
+    "${DOOM_SRC}/neo/d3xp"
+    "${DOOM_SRC}/neo/d3xp/gamesys"
+  )
+
+  target_link_libraries(doom_savegame_restore PUBLIC doom_savegame_file)
+
+  if(WIN32)
+    apply_windows_idlib_flags(doom_savegame_restore)
+    target_compile_definitions(doom_savegame_restore PUBLIC
+      _HAS_AUTO_PTR_ETC=1
+    )
+  else()
+    target_compile_definitions(doom_savegame_restore PUBLIC
+      __linux__
+      ID_PC_LINUX
+      ID_PC
+    )
+    target_compile_options(doom_savegame_restore PRIVATE
+      -Wno-unused-variable
+      -Wno-unused-function
+      -Wno-deprecated-declarations
+      -Wno-format
+      -Wno-ignored-attributes
+    )
+  endif()
+
+  apply_sanitizer_flags(doom_savegame_restore)
 
 else()
   message(WARNING

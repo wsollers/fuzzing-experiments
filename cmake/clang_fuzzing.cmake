@@ -68,59 +68,12 @@ function(add_fuzzer_target name)
       -fsanitize=undefined
       -fprofile-instr-generate
       -fcoverage-mapping
+      /Oy-
       -g
       -O1
     )
-
-    # Locate the clang runtime directory (e.g. .../lib/clang/19/lib/windows/)
-    _find_clang_resource_dir("${CMAKE_CXX_COMPILER}" _clang_res)
-    set(_clang_rt_dir "${_clang_res}/lib/windows")
-
-    if(EXISTS "${_clang_rt_dir}")
-      # Detect architecture suffix
-      if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(_arch "x86_64")
-      else()
-        set(_arch "i386")
-      endif()
-
-      # Required runtime libraries for clang-cl + lld-link:
-      #   clang_rt.fuzzer-<arch>.lib   -- LibFuzzer entry point + engine
-      #   clang_rt.asan_dynamic-<arch>.lib        -- ASan DLL import lib
-      #   clang_rt.asan_dynamic_runtime_thunk-<arch>.lib
-      #   clang_rt.ubsan_standalone-<arch>.lib     -- UBSan
-      set(_fuzzer_lib  "${_clang_rt_dir}/clang_rt.fuzzer-${_arch}.lib")
-      set(_asan_lib    "${_clang_rt_dir}/clang_rt.asan_dynamic-${_arch}.lib")
-      set(_asan_thunk  "${_clang_rt_dir}/clang_rt.asan_dynamic_runtime_thunk-${_arch}.lib")
-      set(_ubsan_lib   "${_clang_rt_dir}/clang_rt.ubsan_standalone-${_arch}.lib")
-
-      foreach(_lib _fuzzer_lib _asan_lib _asan_thunk _ubsan_lib)
-        if(EXISTS "${${_lib}}")
-          target_link_libraries(${name} PRIVATE "${${_lib}}")
-        else()
-          message(STATUS "[clang_fuzzing] Not found (skipping): ${${_lib}}")
-        endif()
-      endforeach()
-
-      # The ASan dynamic runtime DLL must be findable at run time.
-      # /WHOLEARCHIVE is NOT used here; the import lib handles DLL binding.
-      target_link_options(${name} PRIVATE
-        /DEBUG
-        /INCREMENTAL:NO
-      )
-    else()
-      message(WARNING
-        "[clang_fuzzing] Clang runtime dir not found: ${_clang_rt_dir}\n"
-        "Falling back to -fsanitize= linker flags (may fail with lld-link).\n"
-        "Install 'LLVM for Windows' and ensure clang-cl is from that install."
-      )
-      target_link_options(${name} PRIVATE
-        -fsanitize=fuzzer
-        -fsanitize=address
-        -fsanitize=undefined
-        -fprofile-instr-generate
-      )
-    endif()
+    add_clang_windows_runtime(${name} fuzzer)
+    add_clang_windows_runtime(${name} fuzzer_interceptors)
 
   else()
     # Clang on Linux / macOS -- standard flags work end-to-end

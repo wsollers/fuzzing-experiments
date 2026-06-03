@@ -11,7 +11,7 @@ include("${CMAKE_SOURCE_DIR}/cmake/clang_fuzzing.cmake")
 
 # ── idLib string / math fuzzer ─────────────────────────────────────────────────────
 add_fuzzer_target(fuzz_doom_idlib
-  SOURCES doom_idlib_harness.cpp
+  SOURCES doom_idlib_harness.cpp doom_engine_stubs.cpp
   LIBS    doom_idlib
 )
 
@@ -21,13 +21,38 @@ target_include_directories(fuzz_doom_idlib PRIVATE
 
 # ── Config / script parser fuzzer ───────────────────────────────────────────────
 add_fuzzer_target(fuzz_doom_parser
-  SOURCES doom_parser_harness.cpp
+  SOURCES doom_parser_harness.cpp doom_engine_stubs.cpp
   LIBS    doom_idlib
 )
 
 target_include_directories(fuzz_doom_parser PRIVATE
   "${CMAKE_SOURCE_DIR}/src/doom-3-bfg/neo"
 )
+
+# ── Savegame file codec fuzzer ────────────────────────────────────────────────
+if(TARGET doom_savegame_file)
+  add_fuzzer_target(fuzz_doom_savegame
+    SOURCES doom_savegame_harness.cpp doom_engine_stubs.cpp
+    LIBS    doom_savegame_file
+  )
+
+  target_include_directories(fuzz_doom_savegame PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/doom-3-bfg/neo"
+  )
+endif()
+
+# ── Savegame rehydration reader fuzzer ──────────────────────────────────────
+if(TARGET doom_savegame_restore)
+  add_fuzzer_target(fuzz_doom_savegame_restore
+    SOURCES doom_savegame_restore_harness.cpp doom_engine_stubs.cpp
+    LIBS    doom_savegame_restore
+  )
+
+  target_include_directories(fuzz_doom_savegame_restore PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/doom-3-bfg/neo"
+  )
+
+endif()
 
 # To add a new harness:
 #   add_fuzzer_target(fuzz_my_target
