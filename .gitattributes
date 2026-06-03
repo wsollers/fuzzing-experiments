@@ -14,6 +14,7 @@
 *.yml           text eol=lf
 *.cmake         text eol=lf
 CMakeLists.txt  text eol=lf
+CMakePresets.json text eol=lf
 Dockerfile      text eol=lf
 *.py            text eol=lf
 *.json          text eol=lf
@@ -27,6 +28,9 @@ Dockerfile      text eol=lf
 *.h             text eol=lf
 *.hpp           text eol=lf
 
+# PowerShell — CRLF on checkout (Windows native); LF on Linux/Mac
+*.ps1           text eol=crlf
+
 # Binary files — no line ending conversion
 *.png           binary
 *.jpg           binary
@@ -38,3 +42,6 @@ Dockerfile      text eol=lf
 *.gz            binary
 *.profraw       binary
 *.profdata      binary
+*.lib           binary
+*.pdb           binary
+*.exe           binary
