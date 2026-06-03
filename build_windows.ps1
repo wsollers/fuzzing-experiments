@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
     Native Windows build script for fuzzing-experiments.
-    Runs from inside a Visual Studio Developer PowerShell or a shell that has
-    already sourced a VS environment (e.g. vcvarsall.bat x64).
+    Can be run from ANY PowerShell window — no Developer Prompt required.
+    Auto-locates Visual Studio via vswhere and sets up the build environment.
 
 .DESCRIPTION
-    Detects available toolchains in this order:
+    Detects and initialises the VS build environment automatically, then
+    detects available toolchains in this order:
       1. clang-cl  (LLVM for Windows) — preferred for fuzzing
       2. MSVC cl   (VS 2022 17.0+)   — supports /fsanitize=fuzzer
     Selects the matching CMake preset and builds the project.
@@ -16,6 +17,10 @@
     Override the auto-detected CMake preset name.
     Valid values: windows-msvc-debug, windows-msvc-release, windows-msvc-fuzz,
                   windows-clang-debug, windows-clang-fuzz
+
+.PARAMETER VSYear
+    Prefer a specific VS install year: 2022 or 18 (preview).
+    Default: 2022
 
 .PARAMETER SkipFuzz
     Build only; do not run the fuzzer harnesses.
@@ -30,7 +35,7 @@
     Seconds to run each fuzzer harness (default: 60).
 
 .EXAMPLE
-    # Auto-detect toolchain and run everything
+    # Auto-detect everything and run the full pipeline
     .\build_windows.ps1
 
 .EXAMPLE
@@ -38,13 +43,18 @@
     .\build_windows.ps1 -Preset windows-clang-fuzz -SkipCodeQL -SkipOpenGrep
 
 .EXAMPLE
-    # Quick build-only check with MSVC
+    # Quick build-only check with MSVC, no fuzzing
     .\build_windows.ps1 -Preset windows-msvc-release -SkipFuzz -SkipCodeQL -SkipOpenGrep
+
+.EXAMPLE
+    # Use the VS 18 preview install instead of 2022
+    .\build_windows.ps1 -VSYear 18
 #>
 
 [CmdletBinding()]
 param(
     [string] $Preset      = "",
+    [string] $VSYear      = "2022",
     [switch] $SkipFuzz,
     [switch] $SkipCodeQL,
     [switch] $SkipOpenGrep,
@@ -54,7 +64,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ──────────────────────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 function Write-Step { param([string]$Msg) Write-Host "`n[build_windows] $Msg" -ForegroundColor Cyan }
 function Write-Ok   { param([string]$Msg) Write-Host "  OK  $Msg" -ForegroundColor Green }
 function Write-Warn { param([string]$Msg) Write-Host "  !!  $Msg" -ForegroundColor Yellow }
@@ -67,20 +77,99 @@ $DoomSrc    = Join-Path $SrcDir   "doom-3-bfg"
 
 New-Item -ItemType Directory -Force $ReportsDir | Out-Null
 
-# ── Step 0: Verify we are in a VS Developer environment ──────────────────────
-Write-Step "Checking build environment..."
+# ─── Step 0: Locate and initialise the VS build environment ───────────────────
+Write-Step "Locating Visual Studio build environment..."
 
-if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
-    Write-Fail "cmake not found. Open a Visual Studio Developer PowerShell or run vcvarsall.bat x64 first."
+function Invoke-VsEnv {
+    param([string]$Year)
+
+    # Try vswhere first (most reliable, works for any edition)
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $vsInstallPath = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath 2>$null |
+            Where-Object { $_ -like "*\$Year\*" -or $Year -eq "" } |
+            Select-Object -First 1
+
+        # If year filter found nothing, take whatever vswhere returns
+        if (-not $vsInstallPath) {
+            $vsInstallPath = & $vswhere -latest -products * `
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                -property installationPath 2>$null |
+                Select-Object -First 1
+        }
+
+        if ($vsInstallPath) {
+            $vcvars = Join-Path $vsInstallPath "VC\Auxiliary\Build\vcvarsall.bat"
+            if (Test-Path $vcvars) {
+                return $vcvars
+            }
+        }
+    }
+
+    # Fallback: well-known paths ordered by preference
+    $candidates = @(
+        "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
+        "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat",
+        "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat",
+        "C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
+        "C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvarsall.bat",
+        "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    )
+
+    # If a specific year was requested, sort matching ones first
+    if ($Year -ne "") {
+        $candidates = ($candidates | Where-Object { $_ -like "*\$Year\*" }) +
+                      ($candidates | Where-Object { $_ -notlike "*\$Year\*" })
+    }
+
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    return $null
 }
-if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
-    Write-Fail "ninja not found. Install via VS Installer (C++ CMake tools) or 'winget install Ninja-build.Ninja'."
+
+# Only initialise if cl/cmake are not already available (i.e. not in a Dev Prompt)
+$NeedsInit = -not (Get-Command cl -ErrorAction SilentlyContinue)
+
+if ($NeedsInit) {
+    $vcvars = Invoke-VsEnv -Year $VSYear
+    if (-not $vcvars) {
+        Write-Fail "Could not find vcvarsall.bat. Install Visual Studio 2022 with the 'Desktop development with C++' workload."
+    }
+
+    Write-Ok "Found: $vcvars"
+    Write-Ok "Initialising x64 build environment..."
+
+    # Source the bat file and import all env vars it sets into this PowerShell session
+    $envDump = cmd /c "`"$vcvars`" x64 > nul 2>&1 && set"
+    if (-not $envDump) {
+        Write-Fail "vcvarsall.bat failed to initialise. Check your VS installation."
+    }
+
+    $envDump | Where-Object { $_ -match '^[A-Za-z_][A-Za-z0-9_()]*=' } | ForEach-Object {
+        $name, $value = $_ -split '=', 2
+        [System.Environment]::SetEnvironmentVariable($name, $value, 'Process')
+    }
+
+    Write-Ok "VS environment loaded."
+} else {
+    Write-Ok "Build environment already active (cl found in PATH)."
 }
 
-Write-Ok "cmake $(cmake --version | Select-Object -First 1)"
-Write-Ok "ninja $(ninja --version)"
+# Verify the essential tools are now available
+foreach ($tool in @("cl", "cmake", "ninja")) {
+    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+        Write-Fail "$tool not found after environment init. Ensure the 'C++ CMake tools for Windows' component is installed in VS."
+    }
+}
 
-# ── Step 1: Detect toolchain and choose preset ──────────────────────────────
+Write-Ok "cl      : $(cmd /c 'cl 2>&1' | Select-String 'Version' | Select-Object -First 1)"
+Write-Ok "cmake   : $(cmake --version | Select-Object -First 1)"
+Write-Ok "ninja   : $(ninja --version)"
+
+# ─── Step 1: Detect toolchain and choose preset ───────────────────────────────
 Write-Step "Detecting toolchain..."
 
 $HasClangCL = [bool](Get-Command clang-cl -ErrorAction SilentlyContinue)
@@ -89,37 +178,31 @@ $HasCL      = [bool](Get-Command cl       -ErrorAction SilentlyContinue)
 if ($Preset -ne "") {
     Write-Ok "Using user-specified preset: $Preset"
 } elseif ($HasClangCL) {
-    # Check if clang-cl supports -fsanitize=fuzzer by probing the version
-    $ClangVersion = (clang-cl --version 2>&1 | Select-String '(\d+)\.' | ForEach-Object {
-        [int]($_.Matches[0].Groups[1].Value)
-    } | Select-Object -First 1)
-    Write-Ok "clang-cl found (major version $ClangVersion)"
-    if ($SkipFuzz) {
-        $Preset = "windows-clang-debug"
-    } else {
-        $Preset = "windows-clang-fuzz"
-    }
+    $ClangVerLine = (clang-cl --version 2>&1 | Select-Object -First 1)
+    $ClangMajor   = if ($ClangVerLine -match '(\d+)\.') { [int]$Matches[1] } else { 0 }
+    Write-Ok "clang-cl found — $ClangVerLine"
+    $Preset = if ($SkipFuzz) { "windows-clang-debug" } else { "windows-clang-fuzz" }
 } elseif ($HasCL) {
-    # Check MSVC version supports /fsanitize=fuzzer (requires VS 17.0 / cl 19.29+)
-    $CLVersion = (cl 2>&1 | Select-String 'Version (\d+)\.').Matches[0].Groups[1].Value
-    Write-Ok "MSVC cl found (version prefix $CLVersion)"
-    if ([int]$CLVersion -ge 19 -and -not $SkipFuzz) {
+    $CLVerLine  = (cmd /c "cl 2>&1" | Select-String 'Version' | Select-Object -First 1)
+    $CLMajorVer = if ($CLVerLine -match 'Version (\d+)\.') { [int]$Matches[1] } else { 0 }
+    Write-Ok "MSVC cl found — $CLVerLine"
+    if ($SkipFuzz) {
+        $Preset = "windows-msvc-release"
+    } elseif ($CLMajorVer -ge 19) {
         $Preset = "windows-msvc-fuzz"
-    } elseif ($SkipFuzz) {
-        $Preset = "windows-msvc-release"
     } else {
-        Write-Warn "MSVC version may be too old for /fsanitize=fuzzer. Falling back to release build."
-        $Preset = "windows-msvc-release"
+        Write-Warn "MSVC version too old for /fsanitize=fuzzer (need 19.29+). Using release preset."
+        $Preset   = "windows-msvc-release"
         $SkipFuzz = $true
     }
 } else {
-    Write-Fail "No supported compiler found. Install Visual Studio 2022 with C++ workload or LLVM for Windows."
+    Write-Fail "No supported C++ compiler found after environment init."
 }
 
-Write-Ok "Selected preset: $Preset"
+Write-Ok "Selected preset : $Preset"
 $BuildDir = Join-Path $RepoRoot "build" $Preset
 
-# ── Step 2: Clone Doom 3 BFG if needed ──────────────────────────────────────
+# ─── Step 2: Clone Doom 3 BFG if needed ───────────────────────────────────────
 Write-Step "Checking Doom 3 BFG source..."
 
 if (-not (Test-Path (Join-Path $DoomSrc ".git"))) {
@@ -130,17 +213,17 @@ if (-not (Test-Path (Join-Path $DoomSrc ".git"))) {
     Write-Ok "Doom 3 BFG source already present."
 }
 
-# ── Step 3: CMake configure ────────────────────────────────────────────────────
+# ─── Step 3: CMake configure ──────────────────────────────────────────────────
 Write-Step "Configuring with preset '$Preset'..."
 
-push-location $RepoRoot
+Push-Location $RepoRoot
 cmake --preset $Preset
 if ($LASTEXITCODE -ne 0) { Write-Fail "CMake configure failed." }
-pop-location
+Pop-Location
 
-Write-Ok "Configure complete. Build dir: $BuildDir"
+Write-Ok "Configure complete — build dir: $BuildDir"
 
-# ── Step 4: Build ───────────────────────────────────────────────────────────────
+# ─── Step 4: Build ────────────────────────────────────────────────────────────
 Write-Step "Building..."
 
 cmake --build --preset $Preset
@@ -148,35 +231,35 @@ if ($LASTEXITCODE -ne 0) { Write-Fail "Build failed. Check output above." }
 
 Write-Ok "Build succeeded."
 
-# ── Step 5: CodeQL ─────────────────────────────────────────────────────────────────
+# ─── Step 5: CodeQL ───────────────────────────────────────────────────────────
 if (-not $SkipCodeQL) {
     Write-Step "Running CodeQL..."
 
     if (-not (Get-Command codeql -ErrorAction SilentlyContinue)) {
-        Write-Warn "codeql not found in PATH. Download from https://github.com/github/codeql-action/releases"
+        Write-Warn "codeql not found in PATH."
+        Write-Warn "Download from: https://github.com/github/codeql-action/releases"
         Write-Warn "Skipping CodeQL step."
     } else {
         $CodeQLDB = Join-Path $BuildDir "codeql_db"
         $SarifOut = Join-Path $ReportsDir "codeql_results.sarif"
 
-        # Build the CodeQL database using the same build command
         codeql database create $CodeQLDB `
             --language=cpp `
             --command="cmake --build --preset $Preset" `
             --overwrite `
-            --source-root=(Join-Path $RepoRoot "src\doom-3-bfg")
+            --source-root="$RepoRoot\src\doom-3-bfg"
 
-        if ($LASTEXITCODE -ne 0) { Write-Warn "CodeQL database creation failed; check output." }
-        else {
-            codeql pack install (Join-Path $RepoRoot "codeql")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "CodeQL database creation failed."
+        } else {
+            codeql pack install "$RepoRoot\codeql"
             codeql database analyze $CodeQLDB `
-                (Join-Path $RepoRoot "codeql\queries\buffer_access.ql") `
-                (Join-Path $RepoRoot "codeql\queries\uninitialized_var.ql") `
-                (Join-Path $RepoRoot "codeql\queries\integer_overflow.ql") `
-                (Join-Path $RepoRoot "codeql\queries\path_conditions.ql") `
+                "$RepoRoot\codeql\queries\buffer_access.ql" `
+                "$RepoRoot\codeql\queries\uninitialized_var.ql" `
+                "$RepoRoot\codeql\queries\integer_overflow.ql" `
+                "$RepoRoot\codeql\queries\path_conditions.ql" `
                 --format=sarif-latest `
-                --output=$SarifOut
-
+                --output="$SarifOut"
             Write-Ok "CodeQL results: $SarifOut"
         }
     }
@@ -184,13 +267,13 @@ if (-not $SkipCodeQL) {
     Write-Warn "CodeQL skipped (-SkipCodeQL)."
 }
 
-# ── Step 6: OpenGrep ──────────────────────────────────────────────────────────────
+# ─── Step 6: OpenGrep ─────────────────────────────────────────────────────────
 if (-not $SkipOpenGrep) {
     Write-Step "Running OpenGrep / Semgrep..."
 
     $GrepCmd = $null
-    if (Get-Command opengrep -ErrorAction SilentlyContinue) { $GrepCmd = "opengrep" }
-    elseif (Get-Command semgrep -ErrorAction SilentlyContinue) { $GrepCmd = "semgrep" }
+    if     (Get-Command opengrep -ErrorAction SilentlyContinue) { $GrepCmd = "opengrep" }
+    elseif (Get-Command semgrep  -ErrorAction SilentlyContinue) { $GrepCmd = "semgrep"  }
 
     if ($null -eq $GrepCmd) {
         Write-Warn "Neither opengrep nor semgrep found. Install via: pip install opengrep-cli"
@@ -198,25 +281,23 @@ if (-not $SkipOpenGrep) {
     } else {
         $JsonOut = Join-Path $ReportsDir "opengrep_results.json"
         & $GrepCmd `
-            --config (Join-Path $RepoRoot "opengrep\rules") `
-            --json `
-            --output $JsonOut `
+            --config "$RepoRoot\opengrep\rules" `
+            --json --output "$JsonOut" `
             --no-git-ignore `
-            (Join-Path $DoomSrc "neo")
-        # non-zero exit is normal when findings present
+            "$DoomSrc\neo"
         Write-Ok "OpenGrep results: $JsonOut"
     }
 } else {
     Write-Warn "OpenGrep skipped (-SkipOpenGrep)."
 }
 
-# ── Step 7: Run fuzzer harnesses ───────────────────────────────────────────────────
+# ─── Step 7: Run fuzzer harnesses ─────────────────────────────────────────────
 if (-not $SkipFuzz) {
     Write-Step "Running fuzzer harnesses (${FuzzTimeout}s each)..."
 
     $FuzzersDir = Join-Path $BuildDir "fuzzers"
     if (-not (Test-Path $FuzzersDir)) {
-        Write-Warn "No fuzzers directory found at $FuzzersDir. Was ENABLE_FUZZING=ON?"
+        Write-Warn "No fuzzers directory at $FuzzersDir — was ENABLE_FUZZING=ON?"
     } else {
         $CrashBase  = Join-Path $ReportsDir "crashes"
         $CorpusBase = Join-Path $RepoRoot   "corpus"
@@ -238,7 +319,6 @@ if (-not $SkipFuzz) {
             }
 
             Write-Ok "Running $FuzzerName for ${FuzzTimeout}s..."
-
             $env:LLVM_PROFILE_FILE = Join-Path $ReportsDir "${FuzzerName}.profraw"
 
             & $FuzzerExe $CorpusDir `
@@ -247,32 +327,31 @@ if (-not $SkipFuzz) {
                 "-print_final_stats=1" `
                 2>&1 | Tee-Object -FilePath $LogFile
 
-            # Non-zero exit is normal when crashes found
-            Write-Ok "$FuzzerName complete. Log: $LogFile"
+            Write-Ok "$FuzzerName complete — log: $LogFile"
         }
     }
 } else {
     Write-Warn "Fuzzing skipped (-SkipFuzz)."
 }
 
-# ── Step 8: Generate Markdown reports ──────────────────────────────────────────────
+# ─── Step 8: Generate Markdown reports ────────────────────────────────────────
 Write-Step "Generating Markdown reports..."
 
 if (Get-Command python -ErrorAction SilentlyContinue) {
-    python (Join-Path $RepoRoot "scripts\generate_report.py") `
-        --reports-dir $ReportsDir `
-        --build-dir   $BuildDir
+    python "$RepoRoot\scripts\generate_report.py" `
+        --reports-dir "$ReportsDir" `
+        --build-dir   "$BuildDir"
     if ($LASTEXITCODE -eq 0) {
         Write-Ok "Reports written to $ReportsDir"
     } else {
-        Write-Warn "Report generation encountered errors; partial output may exist."
+        Write-Warn "Report generation had errors — partial output may exist."
     }
 } else {
-    Write-Warn "Python not found; skipping report generation."
-    Write-Warn "Install Python 3 and re-run, or view raw JSON results in $ReportsDir"
+    Write-Warn "Python not found — skipping report generation."
+    Write-Warn "Install Python 3 and re-run, or view raw JSON in $ReportsDir"
 }
 
-# ── Done ────────────────────────────────────────────────────────────────────────────
+# ─── Done ─────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "===== build_windows.ps1 complete =====" -ForegroundColor Green
 Write-Host "  Preset  : $Preset"
