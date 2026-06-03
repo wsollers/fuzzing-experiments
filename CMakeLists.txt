@@ -28,24 +28,17 @@ if(EXISTS "${DOOM_SRC}/neo/idlib")
     "${DOOM_SRC}/neo/idlib/*.c"
   )
 
-  # ── Exclude files that cannot compile headlessly on any platform ───────────
-  # macOS / Android / console stubs
+  # ── Exclude files that cannot compile headlessly on any platform ──────────
   list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*/macos/.*")
   list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*/android/.*")
   list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*/stub/.*")
+  # These pull in GPU/job-system headers requiring a full engine build
+  list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*SoftwareCache\\.cpp$")
+  list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*ParallelJobList\\.cpp$")
 
-  if(WIN32)
-    # On Windows _WIN32 is defined naturally so the platform layer compiles,
-    # but a few files pull in GPU/job system headers that require a full engine
-    # build.  Exclude them so the static lib stays self-contained.
-    list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*SoftwareCache\\.cpp$")
-    list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*ParallelJobList\\.cpp$")
-  else()
-    # Linux: additionally exclude the win32 platform layer
+  if(NOT WIN32)
     list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*/win32/.*")
     list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*/sys/win32/.*")
-    list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*SoftwareCache\\.cpp$")
-    list(FILTER IDLIB_SOURCES EXCLUDE REGEX ".*ParallelJobList\\.cpp$")
   endif()
 
   add_library(doom_idlib STATIC ${IDLIB_SOURCES})
@@ -56,10 +49,16 @@ if(EXISTS "${DOOM_SRC}/neo/idlib")
   )
 
   if(WIN32)
-    # Windows: _WIN32 already defined; apply MSVC/clang-cl compatibility flags
     apply_windows_idlib_flags(doom_idlib)
+
+    # idLib's precompiled.h pulls in framework headers that use std::auto_ptr,
+    # which was removed in C++17.  _HAS_AUTO_PTR_ETC=1 re-enables it in the
+    # MSVC/clang-cl STL without changing the language standard for our own code.
+    # std::random_shuffle was also removed in C++17 -- same macro covers it.
+    target_compile_definitions(doom_idlib PUBLIC
+      _HAS_AUTO_PTR_ETC=1
+    )
   else()
-    # Linux: inject the platform macros idLib needs
     target_compile_definitions(doom_idlib PUBLIC
       __linux__
       ID_PC_LINUX
@@ -79,7 +78,7 @@ if(EXISTS "${DOOM_SRC}/neo/idlib")
 else()
   message(WARNING
     "Doom 3 BFG source not found at ${DOOM_SRC}. "
-    "Run scripts/clone_doom.sh (Linux) or scripts/clone_doom.ps1 (Windows) first."
+    "Run scripts/clone_doom.sh (Linux) or clone with git first."
   )
 endif()
 
