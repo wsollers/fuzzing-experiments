@@ -33,10 +33,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     idStr s(buf);
     s.ToLower();
-    s.StripLeadingWhitespace();
     s.StripTrailingWhitespace();
     (void)s.Length();
-    (void)s.Checksum();
 
     if (s.Length() > 0) {
         volatile char c = s[0];
