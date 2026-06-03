@@ -1,8 +1,8 @@
 // fuzz/doom_parser_harness.cpp
 //
-// Fuzz the idLexer / idParser from Doom 3 BFG idLib.
-// OpenGrep rules flag unsafe sscanf/sprintf patterns in the parser;
-// this harness drives those code paths with arbitrary input.
+// Fuzz the idLexer from Doom 3 BFG idLib.
+// NOTE: precompiled.h MUST be first -- idLib headers cannot be included
+// standalone; they rely on typedefs and macros defined in precompiled.h.
 
 #include <cstddef>
 #include <cstdint>
@@ -10,14 +10,13 @@
 #include <algorithm>
 
 #ifdef __has_include
-#  if __has_include("idlib/LexerNG.h")
-#    include "idlib/LexerNG.h"
-#    include "idlib/Token.h"
-#    define HAVE_LEXER 1
-#  elif __has_include("idlib/Lexer.h")
-#    include "idlib/Lexer.h"
-#    include "idlib/Token.h"
-#    define HAVE_LEXER 1
+#  if __has_include("precompiled.h")
+#    include "precompiled.h"
+#    if __has_include("idlib/Lexer.h")
+#      include "idlib/Lexer.h"
+#      include "idlib/Token.h"
+#      define HAVE_LEXER 1
+#    endif
 #  endif
 #endif
 
@@ -35,7 +34,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     idToken token;
     int tokens_read = 0;
-    // Drain up to 1024 tokens to bound CPU per input
     while (tokens_read < 1024 && lexer.ReadToken(&token)) {
         ++tokens_read;
     }
