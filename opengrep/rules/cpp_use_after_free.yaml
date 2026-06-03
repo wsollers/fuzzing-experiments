@@ -1,0 +1,49 @@
+# opengrep/rules/cpp_use_after_free.yaml
+# Detects simple use-after-free and double-free patterns in C++.
+
+rules:
+  - id: cpp-delete-then-use
+    patterns:
+      - pattern: |
+          delete $PTR;
+          ...
+          $PTR->$METHOD(...);
+    message: |
+      Pointer `$PTR` is used after `delete`. This is undefined behaviour and
+      a common fuzzer finding target.
+    languages: [cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-416
+      fuzzing_priority: critical
+
+  - id: cpp-double-free
+    patterns:
+      - pattern: |
+          delete $PTR;
+          ...
+          delete $PTR;
+    message: |
+      `$PTR` is deleted twice. This is undefined behaviour.
+    languages: [cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-415
+      fuzzing_priority: critical
+
+  - id: cpp-free-stack-pointer
+    patterns:
+      - pattern: |
+          $T $VAR[...];
+          ...
+          free($VAR);
+    message: |
+      Calling `free()` on a stack-allocated array `$VAR` is undefined behaviour.
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-590
+      fuzzing_priority: critical

@@ -1,0 +1,67 @@
+# opengrep/rules/c_memory_safety.yaml
+# Detects unsafe C standard library calls prone to buffer overflows.
+
+rules:
+  - id: c-gets-unsafe
+    patterns:
+      - pattern: gets(...)
+    message: |
+      `gets()` has no bounds checking and is always unsafe.
+      Replace with `fgets(buf, sizeof(buf), stdin)`.
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-242
+      fuzzing_priority: critical
+
+  - id: c-strcpy-unsafe
+    patterns:
+      - pattern: strcpy($DST, $SRC)
+    message: |
+      `strcpy` does not check destination buffer size.
+      Use `strlcpy` or `strncpy` with an explicit length.
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-120
+      fuzzing_priority: high
+
+  - id: c-sprintf-unsafe
+    patterns:
+      - pattern: sprintf($BUF, $FMT, ...)
+    message: |
+      `sprintf` can overflow `$BUF`. Use `snprintf` with explicit size.
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-120
+      fuzzing_priority: high
+
+  - id: c-strcat-unsafe
+    patterns:
+      - pattern: strcat($DST, $SRC)
+    message: |
+      `strcat` does not check destination capacity.
+      Use `strncat` or `strlcat`.
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-120
+      fuzzing_priority: high
+
+  - id: c-scanf-unsafe
+    patterns:
+      - pattern: scanf("%s", $BUF)
+    message: |
+      `scanf("%s", ...)` reads unbounded input.
+      Use a width specifier e.g. `scanf("%255s", ...)`.
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-120
+      fuzzing_priority: high

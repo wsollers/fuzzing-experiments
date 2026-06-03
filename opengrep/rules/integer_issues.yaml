@@ -1,0 +1,49 @@
+# opengrep/rules/integer_issues.yaml
+# Detects common integer safety issues: truncation, signed overflow triggers.
+
+rules:
+  - id: int-size-t-to-int-truncation
+    patterns:
+      - pattern: (int)$EXPR
+        metavariable-type:
+          metavariable: $EXPR
+          type: size_t
+    message: |
+      Casting `size_t` to `int` may silently truncate values > INT_MAX,
+      turning a large allocation or length into a negative number.
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-190
+      fuzzing_priority: high
+
+  - id: int-negative-array-index
+    patterns:
+      - pattern: $ARR[$IDX]
+        metavariable-comparison:
+          metavariable: $IDX
+          comparison: $IDX < 0
+    message: |
+      Array indexed with a value that may be negative. This is undefined
+      behaviour and can be triggered by integer-overflow fuzzing inputs.
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-129
+      fuzzing_priority: critical
+
+  - id: int-alloc-from-arithmetic
+    patterns:
+      - pattern: malloc($A * $B)
+      - pattern: new $T[$A * $B]
+    message: |
+      Allocation size is computed by multiplication; check for integer overflow
+      before the allocation. Consider using `checked_mul` or explicit bounds.
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-190
+      fuzzing_priority: high
