@@ -4,6 +4,8 @@
 build/
 *.o
 *.a
+*.lib
+*.pdb
 
 # Fuzzer corpus (can grow very large; commit seeds separately)
 corpus/
@@ -20,8 +22,11 @@ reports/*
 # CodeQL database
 codeql_db/
 
-# Doom 3 BFG source (populated by clone_doom.sh, not committed)
+# Doom 3 BFG source (populated by clone_doom.sh / fuzz.ps1, not committed)
 src/doom-3-bfg/
+
+# Nested repo clone — safety net in case fuzz.ps1 is run from inside the repo
+fuzzing-experiments/
 
 # Python
 __pycache__/
