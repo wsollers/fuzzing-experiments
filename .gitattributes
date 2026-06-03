@@ -1,0 +1,40 @@
+# Ensure consistent line endings across platforms.
+# Shell scripts and config files must use LF to work correctly
+# inside Linux Docker containers, even when checked out on Windows.
+
+# Default: normalize to LF on commit, checkout as-is
+* text=auto
+
+# Force LF for everything that runs inside the container or is parsed by Linux tools
+*.sh            text eol=lf
+*.bash          text eol=lf
+*.ql            text eol=lf
+*.qll           text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
+*.cmake         text eol=lf
+CMakeLists.txt  text eol=lf
+Dockerfile      text eol=lf
+*.py            text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+*.gitignore     text eol=lf
+*.gitattributes text eol=lf
+
+# C/C++ source — LF for consistency
+*.c             text eol=lf
+*.cpp           text eol=lf
+*.h             text eol=lf
+*.hpp           text eol=lf
+
+# Binary files — no line ending conversion
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.zip           binary
+*.tar           binary
+*.gz            binary
+*.profraw       binary
+*.profdata      binary
