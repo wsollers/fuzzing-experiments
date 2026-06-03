@@ -1,0 +1,8 @@
+// CodeQL QL pack definition
+// codeql/qlpack.yml
+name: fuzzing-experiments/doom-queries
+version: 1.0.0
+description: Custom CodeQL queries to guide fuzz testing of Doom 3 BFG
+library: false
+dependencies:
+  codeql/cpp-all: "*"
