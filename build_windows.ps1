@@ -199,7 +199,7 @@ if ($Preset -ne "") {
 }
 
 Write-Ok "Selected preset: $Preset"
-$BuildDir = Join-Path $RepoRoot "build" $Preset
+$BuildDir = Join-Path (Join-Path $RepoRoot "build") $Preset
 
 # --- Step 2: Clone Doom 3 BFG if needed ---------------------------------------
 Write-Step "Checking Doom 3 BFG source..."
