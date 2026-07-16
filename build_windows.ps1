@@ -34,6 +34,10 @@
 .PARAMETER FuzzTimeout
     Seconds to run each fuzzer harness (default: 60).
 
+.PARAMETER FuzzRssLimitMb
+    libFuzzer RSS limit in MB (default: 4096). Use 0 to disable libFuzzer's
+    memory limit.
+
 .EXAMPLE
     # Auto-detect everything and run the full pipeline
     .\build_windows.ps1
@@ -58,7 +62,8 @@ param(
     [switch] $SkipFuzz,
     [switch] $SkipCodeQL,
     [switch] $SkipOpenGrep,
-    [int]    $FuzzTimeout = 60
+    [int]    $FuzzTimeout = 60,
+    [int]    $FuzzRssLimitMb = 4096
 )
 
 Set-StrictMode -Version Latest
@@ -69,6 +74,77 @@ function Write-Step { param([string]$Msg) Write-Host "`n[build_windows] $Msg" -F
 function Write-Ok   { param([string]$Msg) Write-Host "  OK  $Msg" -ForegroundColor Green }
 function Write-Warn { param([string]$Msg) Write-Host "  !!  $Msg" -ForegroundColor Yellow }
 function Write-Fail { param([string]$Msg) Write-Host "FAIL  $Msg" -ForegroundColor Red; exit 1 }
+
+function ConvertTo-WindowsCommandLineArgument {
+    param([string]$Argument)
+
+    if ($Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($ch in $Argument.ToCharArray()) {
+        if ($ch -eq '\') {
+            $backslashes++
+            continue
+        }
+        if ($ch -eq '"') {
+            [void]$builder.Append('\' * (($backslashes * 2) + 1))
+            [void]$builder.Append('"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append('\' * $backslashes)
+            $backslashes = 0
+        }
+        [void]$builder.Append($ch)
+    }
+    if ($backslashes -gt 0) {
+        [void]$builder.Append('\' * ($backslashes * 2))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Invoke-NativeWithTee {
+    param(
+        [string] $Exe,
+        [string[]] $Arguments,
+        [string] $LogFile
+    )
+
+    $ArgumentLine = ($Arguments | ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join " "
+    $StdOutFile = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    $StdErrFile = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    try {
+        $proc = Start-Process -FilePath $Exe `
+            -ArgumentList $ArgumentLine `
+            -WorkingDirectory $RepoRoot `
+            -RedirectStandardOutput $StdOutFile `
+            -RedirectStandardError $StdErrFile `
+            -NoNewWindow `
+            -Wait `
+            -PassThru
+
+        $Output = @()
+        if (Test-Path $StdOutFile) {
+            $Output += Get-Content $StdOutFile
+        }
+        if (Test-Path $StdErrFile) {
+            $Output += Get-Content $StdErrFile
+        }
+        $Output | Set-Content -Path $LogFile -Encoding UTF8
+        foreach ($Line in $Output) {
+            Write-Host $Line
+        }
+        return $proc.ExitCode
+    } finally {
+        Remove-Item $StdOutFile, $StdErrFile -Force -ErrorAction SilentlyContinue
+    }
+}
 
 # Safe compiler version probe -- captures output into a variable before use.
 function Get-VersionString {
@@ -319,19 +395,18 @@ if (-not $SkipFuzz) {
             Write-Ok "Running $FuzzerName for ${FuzzTimeout}s..."
             $env:LLVM_PROFILE_FILE = Join-Path $ReportsDir "${FuzzerName}.profraw"
 
-            $FuzzerCmd = @(
-                "`"$FuzzerExe`"",
-                "`"$CorpusDir`"",
-                "`"-max_total_time=$FuzzTimeout`"",
-                "`"-artifact_prefix=$CrashDir\`"",
-                "`"-print_final_stats=1`"",
-                "2>&1"
-            ) -join " "
+            $FuzzerArgs = @(
+                $CorpusDir,
+                "-max_total_time=$FuzzTimeout",
+                "-rss_limit_mb=$FuzzRssLimitMb",
+                "-artifact_prefix=$CrashDir\",
+                "-print_final_stats=1"
+            )
 
-            cmd.exe /d /s /c $FuzzerCmd | Tee-Object -FilePath $LogFile
+            $ExitCode = Invoke-NativeWithTee -Exe $FuzzerExe -Arguments $FuzzerArgs -LogFile $LogFile
 
-            if ($LASTEXITCODE -ne 0) {
-                Write-Fail "$FuzzerName failed with exit code $LASTEXITCODE. Log: $LogFile"
+            if ($ExitCode -ne 0) {
+                Write-Fail "$FuzzerName failed with exit code $ExitCode. Log: $LogFile"
             }
 
             Write-Ok "$FuzzerName complete -- log: $LogFile"
